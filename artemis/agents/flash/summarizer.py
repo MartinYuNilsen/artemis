@@ -52,6 +52,26 @@ SUMMARY_MIN_CHARS = 15
 SUMMARY_MAX_CHARS = 1500
 
 
+def _summarizer_rides_google(ctx: ArtemisContext) -> bool:
+    """Whether an explicit ``step_summarizer.model`` should use the raw Google client.
+
+    True unless the LLM config's summarizer role is another provider (as the chunk capsule lens does),
+    so Google-only setups keep their behaviour and an Anthropic- or OpenAI-only setup needs no Gemini key.
+    """
+    try:
+        from artemis.llm.google import is_google_provider
+
+        llm_cfg = getattr(ctx, "llm_config", None)
+        if llm_cfg is None:
+            from artemis.config.llm import get_default_llm_config
+
+            llm_cfg = get_default_llm_config()
+        provider = getattr(getattr(llm_cfg, "summarizer", None), "provider", None)
+        return not provider or is_google_provider(str(provider))
+    except Exception:
+        return True
+
+
 def degenerate_summary_reason(text: str) -> str | None:
     """Why a lens output is unusable (echo/length), or None when it is fine."""
     if SUMMARY_ECHO_MARKER in text or text.startswith("---"):
@@ -165,10 +185,17 @@ class VisualStepSummarizer(StepMemoryService):
         target_model = model_name or "gemini-2.5-flash-lite"
         self._model_name = target_model
         try:
-            if model_name:
+            if model_name and _summarizer_rides_google(ctx):
                 self._llm = get_google_llm(model_name=target_model, temperature=0.0)
             else:
-                self._llm = get_llm(ctx, name="summarizer", is_utils=True)
+                # No explicit model, or the configured summarizer endpoint is not Google
+                # (a keyless Google client can never succeed there): use the configured endpoint.
+                # Take the raw model, not the resumable wrapper: when the wrapper's retries run
+                # out it pauses the *whole task* (PAUSE_FILE) and waits for a human, and the
+                # lens's 25 s timeout would cancel that wait and leave the file behind. Failures
+                # here belong to StepMemoryService's bounded retry, and the raw model keeps the
+                # explicit usage metering in _meter_lens_call.
+                self._llm = get_llm(ctx, name="summarizer", temperature=0.0).base_model
         except Exception:
             self._llm = get_google_llm(model_name=target_model, temperature=0.0)
         try:

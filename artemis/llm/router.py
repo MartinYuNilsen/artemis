@@ -22,6 +22,7 @@ Anthropic, OpenRouter, and local Ollama/vLLM endpoints.
 from enum import StrEnum
 import hashlib
 import os
+import re
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -33,6 +34,19 @@ from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+
+_CLAUDE_5_PLUS = re.compile(r"^claude-[a-z]+-(?:[5-9]|\d{2,})(?:-|$)")
+
+
+def is_claude_5_plus(model_name: str) -> bool:
+    """Whether a model name is in the Claude 5 family or later."""
+    return bool(_CLAUDE_5_PLUS.match(model_name.strip().lower()))
+
+
+def _anthropic_rejects_temperature(model_name: str) -> bool:
+    """Claude 5+ deprecates ``temperature``: any explicit value is a 400."""
+    return is_claude_5_plus(model_name)
 
 class ModelProvider(StrEnum):
     GOOGLE = "google"
@@ -328,6 +342,10 @@ class ModelFactory:
             if budget:
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
                 kwargs["temperature"] = 1.0
+            if _anthropic_rejects_temperature(endpoint.model_name):
+                # Claude 5+ models answer 400 "`temperature` is deprecated for
+                # this model" to any explicit value, so leave it unset.
+                kwargs.pop("temperature", None)
             return ChatAnthropic(**{k: v for k, v in kwargs.items() if v is not None})
 
         elif provider == ModelProvider.OPENROUTER:

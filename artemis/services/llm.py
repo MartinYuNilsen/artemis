@@ -52,7 +52,7 @@ from artemis.llm.reliability import (
     classify_failure,
     retry_policy_for,
 )
-from artemis.llm.router import ModelEndpoint, ModelFactory, ModelProvider
+from artemis.llm.router import ModelEndpoint, ModelFactory, ModelProvider, is_claude_5_plus
 from artemis.services.token_meter import record_llm_usage
 from artemis.llm.structured import (
     ParseFailure,
@@ -595,6 +595,15 @@ class RobustChatModelWrapper:
 
     def with_structured_output(self, *args, **kwargs):
         if hasattr(self.base_model, "with_structured_output"):
+            # langchain-anthropic defaults to forced tool calling
+            # (tool_choice type "tool"), which Claude 5+ rejects with a 400.
+            # Its native structured-output mode needs no tool_choice.
+            if (
+                self._provider_value() == ModelProvider.ANTHROPIC.value
+                and self.endpoint is not None
+                and is_claude_5_plus(self.endpoint.model_name)
+            ):
+                kwargs.setdefault("method", "json_schema")
             return RobustChatModelWrapper(
                 self.base_model.with_structured_output(*args, **kwargs),
                 self.ctx,

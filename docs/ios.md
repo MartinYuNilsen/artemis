@@ -357,7 +357,28 @@ perception and action tools. Screenshots and touch coordinates are kept in the
 same coordinate space. Custom UI without accessible elements still relies on
 visual targeting.
 
-watchOS, tvOS, and visionOS are outside this implementation. Install a
+## tvOS (Apple TV simulator)
+
+tvOS simulators are driven through the same Xcode MCP path as iPhone
+simulators and are selected the same way (`--platform ios --device-serial
+<Apple TV simulator UDID>`). Apple TV has no touchscreen, so input follows the
+Siri Remote focus model instead of coordinates:
+
+| Operator key | Siri Remote button |
+|---|---|
+| `DPAD_UP` / `DPAD_DOWN` / `DPAD_LEFT` / `DPAD_RIGHT` | directional pad |
+| `ENTER` or `DPAD_CENTER` | Select |
+| `BACK` | Menu |
+| `HOME` | Home screen |
+| `MEDIA_PLAY_PAUSE` | Play/Pause |
+
+The element currently holding focus is reported with `focused=true`. `tap`,
+`long_press`, and `swipe` fail with an explicit error on tvOS, as do
+`power`, `volume_*`, and `app_switch`. Text entry works while a text field or
+the on-screen keyboard has focus. Physical Apple TV hardware (WebDriverAgent)
+is not implemented or tested.
+
+watchOS and visionOS are outside this implementation. Install a
 simulator build on simulators and a device-signed build on hardware; neither
 artifact is interchangeable with the other or with an Android `.apk`. The
 drivers do not build Xcode projects.

@@ -1511,7 +1511,8 @@ async def test_operator_press_key_translation_is_case_insensitive():
     )
     assert actions == []
     assert err == (
-        "Error: Unsupported key 'delete'. Supported keys: ENTER, BACK, HOME, APP_SWITCH, POWER, VOLUME_UP, VOLUME_DOWN."
+        "Error: Unsupported key 'delete'. Supported keys: ENTER, BACK, HOME, APP_SWITCH, POWER, VOLUME_UP, VOLUME_DOWN, "
+        "DPAD_UP, DPAD_DOWN, DPAD_LEFT, DPAD_RIGHT, DPAD_CENTER, MEDIA_PLAY_PAUSE."
     )
 
 

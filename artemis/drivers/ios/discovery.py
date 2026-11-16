@@ -152,16 +152,21 @@ def parse_xcode_version(payload: bytes | str) -> str | None:
 
 
 def parse_simctl_devices(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """Flatten ``simctl list devices --json`` into available iOS entries."""
+    """Flatten ``simctl list devices --json`` into available iOS/tvOS entries.
+
+    tvOS simulators share the iOS platform surface (queues, locks, CLI, MCP);
+    ``os_family`` tells drivers and prompts to use remote/focus input.
+    """
     return [
         {
             "udid": device.get("udid"),
             "name": device.get("name"),
             "state": device.get("state"),
             "runtime": runtime,
+            "os_family": "tvos" if ".tvOS-" in runtime else "ios",
         }
         for runtime, entries in payload.get("devices", {}).items()
-        if ".iOS-" in runtime
+        if ".iOS-" in runtime or ".tvOS-" in runtime
         for device in entries
         if device.get("isAvailable") and device.get("udid")
     ]

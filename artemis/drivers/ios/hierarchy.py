@@ -98,7 +98,7 @@ def parse_hierarchy(
             # Xcode elides long values and drops quotes, e.g. `value: Text...`,
             # so read until the next native metadata delimiter verbatim.
             unquoted = re.search(
-                r"\bvalue:\s*(.*?)(?=,\s*(?:Keyboard Focused\b|Selected\b|Disabled\b"
+                r"\bvalue:\s*(.*?)(?=,\s*(?:Keyboard Focused\b|Focused\b|Selected\b|Disabled\b"
                 r"|hitPoint:|activationBundleId:|identifier:|label:|placeholderValue:)|$)",
                 line,
             )
@@ -128,6 +128,12 @@ def parse_hierarchy(
             element["hit_point"] = [round(hx * scale[0]), round(hy * scale[1])]
         if activation:
             element["activation_bundle_id"] = activation.group(1)
+        # tvOS marks the single focus-engine target with a bare ``Focused``
+        # flag (distinct from the iOS text-field ``Keyboard Focused``). Expose
+        # it in the Android-shaped vocabulary the rest of Artemis understands.
+        if re.search(r",\s*Focused\b", re.sub(r"'(?:\\.|[^'])*'", "''", line)):
+            element["focused"] = "true"
+            element["focusable"] = "true"
         if placeholder:
             element["placeholder"] = placeholder.group(1)
         if value_text is not None:

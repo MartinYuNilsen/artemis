@@ -21,6 +21,7 @@ import re
 from pathlib import Path
 import plistlib
 import sys
+import tempfile
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
@@ -71,6 +72,30 @@ async def _parse_listapps_output(raw: bytes) -> dict[str, Any]:
     return json.loads(await plist_to_json(raw))
 
 
+# Siri Remote vocabulary for tvOS simulators (Xcode ``r <button>`` command).
+# Android TV D-pad key names are accepted too so one Operator vocabulary
+# drives both TV platforms; touch-only keys have no remote equivalent.
+_TVOS_REMOTE_KEYS = {
+    "up": "up",
+    "down": "down",
+    "left": "left",
+    "right": "right",
+    "select": "select",
+    "dpad_up": "up",
+    "dpad_down": "down",
+    "dpad_left": "left",
+    "dpad_right": "right",
+    "dpad_center": "select",
+    "enter": "select",
+    "menu": "menu",
+    "back": "menu",
+    "playpause": "playpause",
+    "play_pause": "playpause",
+    "media_play_pause": "playpause",
+    "home": "home",
+}
+
+
 class XcodeSimulatorDriver(BaseDeviceDriver):
     """One explicitly selected iOS simulator and one native interaction session.
 
@@ -98,6 +123,21 @@ class XcodeSimulatorDriver(BaseDeviceDriver):
         self._connect_lock = asyncio.Lock()
         self._operation_lock = asyncio.Lock()
         self._recorder: IosScreenRecorder | PhysicalIosRecorder | None = None
+        # "ios" until resolution says otherwise; "tvos" switches input to the
+        # Siri Remote focus model (no touch).
+        self._os_family = "ios"
+
+    @property
+    def is_tvos(self) -> bool:
+        return self._os_family == "tvos"
+
+    def _reject_touch_on_tvos(self, action: str) -> None:
+        if self.is_tvos:
+            raise NotImplementedError(
+                f"{action} is unavailable on tvOS: Apple TV has no touchscreen. Move focus "
+                "with press_key (DPAD_UP/DOWN/LEFT/RIGHT), activate it with ENTER "
+                "(or DPAD_CENTER), and go back with BACK."
+            )
 
     @property
     def device_id(self) -> str:
@@ -156,6 +196,7 @@ class XcodeSimulatorDriver(BaseDeviceDriver):
             if not candidates:
                 raise ValueError(f"Unavailable iOS simulator UDID: {self._device_id}")
         self._device_id = candidates[0]["udid"]
+        self._os_family = candidates[0].get("os_family", "ios")
         return candidates[0]
 
     async def _prepare_device(self, candidate: dict[str, Any]) -> None:
@@ -381,6 +422,16 @@ class XcodeSimulatorDriver(BaseDeviceDriver):
         hierarchy = await asyncio.to_thread(Path(hierarchy_path).read_text, encoding="utf-8")
         self._scale = None
         elements, self._scale = parse_hierarchy(hierarchy, self._width, self._height)
+        if self.is_tvos:
+            fresh = await self._fresh_native_screenshot(
+                round(self._width / self._scale[0]), round(self._height / self._scale[1])
+            )
+            if fresh is not None:
+                screenshot = fresh
+                with Image.open(BytesIO(screenshot)) as image:
+                    self._width, self._height = image.size
+                self._scale = None
+                elements, self._scale = parse_hierarchy(hierarchy, self._width, self._height)
         return ScreenData(
             screenshot_bytes=screenshot,
             screenshot_base64=base64.b64encode(screenshot).decode("ascii"),
@@ -389,6 +440,39 @@ class XcodeSimulatorDriver(BaseDeviceDriver):
             height=self._height,
             platform="ios",
         )
+
+    async def _fresh_native_screenshot(self, width: int, height: int) -> bytes | None:
+        """A current, full-resolution frame sized to the hierarchy's point space.
+
+        Xcode's synthesized screenshot is half the app's layout size and can
+        lag the hierarchy: on a tvOS page transition it returned the loading
+        spinner next to a hierarchy that already held the loaded page. A
+        ``simctl`` frame taken *after* the hierarchy is never older than it,
+        and downscaling the native 4K render keeps small TV text legible.
+        Returns ``None`` (keep Xcode's frame) on any failure.
+        """
+        if width <= 0 or height <= 0:
+            return None
+        try:
+            with tempfile.TemporaryDirectory(prefix="artemis-tvos-") as directory:
+                path = Path(directory) / "frame.png"
+                await run_xcrun(
+                    "simctl", "io", self._device_id, "screenshot", "--type=png", str(path),
+                    timeout=20.0,
+                )
+                raw = await asyncio.to_thread(path.read_bytes)
+
+            def encode() -> bytes:
+                with Image.open(BytesIO(raw)) as image:
+                    frame = image.convert("RGB").resize((width, height), Image.Resampling.LANCZOS)
+                    out = BytesIO()
+                    frame.save(out, "JPEG", quality=92)
+                    return out.getvalue()
+
+            return await asyncio.to_thread(encode)
+        except (OSError, RuntimeError, TimeoutError, ValueError) as error:
+            logger.debug(f"Native tvOS screenshot unavailable; keeping Xcode's frame: {error}")
+            return None
 
     async def get_screen_data(self, skip_settling: bool = False) -> ScreenData:
         # Xcode captures after animations settle; an extra Android delay is unnecessary.
@@ -452,6 +536,7 @@ class XcodeSimulatorDriver(BaseDeviceDriver):
     async def tap(
         self, x: int, y: int, duration_ms: int = 100, times: int = 1, delay_ms: int = 100
     ) -> bool:
+        self._reject_touch_on_tvos("tap")
         if times < 1 or duration_ms < 0 or delay_ms < 0:
             raise ValueError("Tap count must be positive and durations nonnegative.")
         async with self._operation_lock:
@@ -469,6 +554,7 @@ class XcodeSimulatorDriver(BaseDeviceDriver):
     async def swipe(
         self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int = 800
     ) -> bool:
+        self._reject_touch_on_tvos("swipe")
         if duration_ms <= 0:
             raise ValueError("Swipe duration must be positive.")
         async with self._operation_lock:
@@ -484,6 +570,7 @@ class XcodeSimulatorDriver(BaseDeviceDriver):
         direction: SwipeDirection | Literal["up", "down", "left", "right"],
         duration_ms: int = 800,
     ) -> bool:
+        self._reject_touch_on_tvos("swipe")
         direction = SwipeDirection(direction).value
         if duration_ms <= 0:
             raise ValueError("Swipe duration must be positive.")
@@ -512,6 +599,17 @@ class XcodeSimulatorDriver(BaseDeviceDriver):
 
     async def press_key(self, key: KeyCode | str | int) -> bool:
         key = key.value if isinstance(key, KeyCode) else str(key).lower()
+        if self.is_tvos:
+            name = key.removeprefix("keycode_")
+            button = _TVOS_REMOTE_KEYS.get(name)
+            if button is None:
+                raise NotImplementedError(
+                    f"Key {key!r} is not available on tvOS. Supported: "
+                    f"{', '.join(sorted(_TVOS_REMOTE_KEYS))}."
+                )
+            async with self._operation_lock:
+                await self._synthesize(f"r {button}")
+            return True
         commands = {
             "home": "b h",
             "power": "b p",

@@ -80,6 +80,13 @@ SUPPORTED_PRESS_KEYS = (
     "POWER",
     "VOLUME_UP",
     "VOLUME_DOWN",
+    # Android TV D-pad / tvOS Siri Remote focus navigation.
+    "DPAD_UP",
+    "DPAD_DOWN",
+    "DPAD_LEFT",
+    "DPAD_RIGHT",
+    "DPAD_CENTER",
+    "MEDIA_PLAY_PAUSE",
 )
 
 from artemis.agents.operator.prompts import (

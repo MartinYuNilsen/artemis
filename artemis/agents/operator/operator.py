@@ -72,7 +72,22 @@ DEFERRING_TOOLS = {
 }
 
 # Bare key names press_key accepts (case-insensitive, optional KEYCODE_ prefix).
-SUPPORTED_PRESS_KEYS = ("ENTER", "BACK", "HOME", "APP_SWITCH")
+SUPPORTED_PRESS_KEYS = (
+    "ENTER",
+    "BACK",
+    "HOME",
+    "APP_SWITCH",
+    "POWER",
+    "VOLUME_UP",
+    "VOLUME_DOWN",
+    # Android TV D-pad / tvOS Siri Remote focus navigation.
+    "DPAD_UP",
+    "DPAD_DOWN",
+    "DPAD_LEFT",
+    "DPAD_RIGHT",
+    "DPAD_CENTER",
+    "MEDIA_PLAY_PAUSE",
+)
 
 from artemis.agents.operator.prompts import (
     OPERATOR_MAX_TOOL_ITERATIONS,
@@ -919,7 +934,9 @@ class OperatorNode:
         # The analyzer is always available: the "output truncated, use
         # analyze_task_output" hint arrives mid-turn, and tools are bound once per
         # turn, so a conditional mount would be one turn late.
-        if not any(t.name == "analyze_task_output" for t in all_tools):
+        if getattr(getattr(self.ctx, "device", None), "mobile_platform", None) != "ios" and not any(
+            t.name == "analyze_task_output" for t in all_tools
+        ):
             all_tools.append(analyze_task_output_wrapper.tool_fn_getter(self.ctx))
 
         traced_tools = [trace_langchain_tool(t, self.ctx) for t in all_tools]

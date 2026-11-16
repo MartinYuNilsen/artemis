@@ -565,13 +565,28 @@ _SPECS: tuple[ActionSpec, ...] = (
         operator=OperatorDialect(
             description=(
                 "[ACTION] Press a physical or virtual system button (e.g. ENTER, BACK,"
-                " HOME, APP_SWITCH)."
+                " HOME, APP_SWITCH, POWER, VOLUME_UP, VOLUME_DOWN, or on TV"
+                " DPAD_UP/DOWN/LEFT/RIGHT/CENTER and MEDIA_PLAY_PAUSE)."
             ),
             params=(
                 ParamSpec(
                     "key",
-                    Literal["ENTER", "BACK", "HOME", "APP_SWITCH"],
-                    "Standard Android system button name (ENTER, BACK, HOME, APP_SWITCH).",
+                    Literal[
+                        "ENTER",
+                        "BACK",
+                        "HOME",
+                        "APP_SWITCH",
+                        "POWER",
+                        "VOLUME_UP",
+                        "VOLUME_DOWN",
+                        "DPAD_UP",
+                        "DPAD_DOWN",
+                        "DPAD_LEFT",
+                        "DPAD_RIGHT",
+                        "DPAD_CENTER",
+                        "MEDIA_PLAY_PAUSE",
+                    ],
+                    "Standard system button name (ENTER, BACK, HOME, APP_SWITCH, POWER, VOLUME_UP, VOLUME_DOWN, plus DPAD_UP/DOWN/LEFT/RIGHT/CENTER and MEDIA_PLAY_PAUSE for TV focus navigation).",
                 ),
             ),
         ),

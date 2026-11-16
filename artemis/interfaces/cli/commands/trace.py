@@ -109,3 +109,123 @@ def view_trace(
     typer.secho(f"Session files in {session_dir}:", fg=typer.colors.CYAN)
     for f in session_dir.iterdir():
         typer.echo(f"  - {f.name}")
+
+
+def _open_trace_db(db: Path | None):
+    from artemis.config import get_data_engine_db_path
+    from artemis.core.trace_export import TraceExportError, open_readonly
+
+    path = db or get_data_engine_db_path()
+    try:
+        return open_readonly(path), path
+    except TraceExportError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+
+
+@trace_app.command("export")
+def export_trace(
+    session: Annotated[
+        str, typer.Argument(help="Session id, a unique id prefix, or 'latest'.")
+    ],
+    db: Annotated[
+        Path | None,
+        typer.Option("--db", envvar="ARTEMIS_DATA_ENGINE_DB", help="Path to data_engine.db."),
+    ] = None,
+    out: Annotated[
+        Path | None, typer.Option("--out", "-o", help="Write the JSON here instead of stdout.")
+    ] = None,
+) -> None:
+    """Export a recorded run as structured steps (artemis.trace-export/1).
+
+    Actions, focus before/after, texts that identify each screen and the outcome of every
+    dispatch are read from the DataEngine store, not from the agent's own prose report.
+    """
+    from artemis.core.trace_export import TraceExportError, export_session
+
+    con, path = _open_trace_db(db)
+    try:
+        document = export_session(con, session, images_dir=path.parent / "images")
+    except TraceExportError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    finally:
+        con.close()
+    text = json.dumps(document, ensure_ascii=False, indent=2)
+    if out is None:
+        typer.echo(text)
+        return
+    out.write_text(text + "\n", encoding="utf-8")
+    typer.secho(
+        f"Exported {len(document['steps'])} steps to {out}", fg=typer.colors.GREEN, err=True
+    )
+
+
+@trace_app.command("consistency")
+def trace_consistency(
+    db: Annotated[
+        Path | None,
+        typer.Option("--db", envvar="ARTEMIS_DATA_ENGINE_DB", help="Path to data_engine.db."),
+    ] = None,
+    goal: Annotated[
+        str | None, typer.Option("--goal", "-g", help="Only goals containing this text.")
+    ] = None,
+    min_runs: Annotated[int, typer.Option("--min-runs", help="Hide goals run fewer times.")] = 1,
+    group_by: Annotated[
+        str,
+        typer.Option(
+            "--group-by",
+            help="'goal' = identical goal text; 'label' = same journey even if the wording was edited.",
+        ),
+    ] = "goal",
+    as_json: Annotated[bool, typer.Option("--json", help="Machine-readable output.")] = False,
+) -> None:
+    """Baseline: how consistently were repeated runs of the same goal completed?
+
+    Groups recorded runs by goal and reports completion, size and path agreement, i.e.
+    whether repeated runs press the same keys in the same order.
+    """
+    from artemis.core.trace_consistency import collect_runs, summarize
+
+    con, _ = _open_trace_db(db)
+    try:
+        groups = summarize(
+            collect_runs(con, goal_contains=goal), min_runs=min_runs, group_by=group_by
+        )
+    finally:
+        con.close()
+    if as_json:
+        typer.echo(json.dumps(groups, ensure_ascii=False, indent=2))
+        return
+    if not groups:
+        typer.secho("No recorded runs match.", fg=typer.colors.YELLOW)
+        return
+    table = Table(title="Run consistency by goal")
+    for column, justify in (
+        ("Goal", "left"),
+        ("Runs", "right"),
+        ("Done", "right"),
+        ("Setup fails", "right"),
+        ("Agent rate", "right"),
+        ("Actions", "right"),
+        ("Median s", "right"),
+        ("Median tokens", "right"),
+        ("Same path", "right"),
+    ):
+        table.add_column(  # type: ignore[arg-type]
+            column, justify=justify, no_wrap=True, min_width=len(column), overflow="ellipsis"
+        )
+    for g in groups:
+        agree = g["path_agreement"]
+        table.add_row(
+            g["goal"],
+            str(g["runs"]),
+            str(g["completed"]),
+            str(g["setup_failures"]),
+            "-" if g["agent_completion_rate"] is None else f"{g['agent_completion_rate']:.0%}",
+            "-" if g["actions_median"] is None else f"{g['actions_median']:g}",
+            "-" if g["duration_s_median"] is None else f"{g['duration_s_median']:g}",
+            "-" if g["tokens_median"] is None else f"{int(g['tokens_median']):,}",
+            f"{agree['identical_to_modal']:.0%}" if agree["comparable"] else "n/a",
+        )
+    Console().print(table)

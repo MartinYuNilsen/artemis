@@ -190,7 +190,12 @@ class VisualStepSummarizer(StepMemoryService):
             else:
                 # No explicit model, or the configured summarizer endpoint is not Google
                 # (a keyless Google client can never succeed there): use the configured endpoint.
-                self._llm = get_llm(ctx, name="summarizer", temperature=0.0)
+                # Take the raw model, not the resumable wrapper: when the wrapper's retries run
+                # out it pauses the *whole task* (PAUSE_FILE) and waits for a human, and the
+                # lens's 25 s timeout would cancel that wait and leave the file behind. Failures
+                # here belong to StepMemoryService's bounded retry, and the raw model keeps the
+                # explicit usage metering in _meter_lens_call.
+                self._llm = get_llm(ctx, name="summarizer", temperature=0.0).base_model
         except Exception:
             self._llm = get_google_llm(model_name=target_model, temperature=0.0)
         try:

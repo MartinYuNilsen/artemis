@@ -779,3 +779,14 @@ async def test_check_loop_tool_message_status_is_structural(result, expected_sta
     assert tool_msgs[0].tool_call_id == "c1"
     assert tool_msgs[0].status == expected_status
     assert tool_msgs[0].content == str(result)
+
+
+def test_checker_rules_require_reading_a_referenced_note_before_judging():
+    """A run judged a note-based item inconclusive because the checker quoted a note it never read."""
+    import json
+    from pathlib import Path
+
+    import artemis.agents.checker.checker as checker_module
+
+    rules = json.loads((Path(checker_module.__file__).with_name("checker.json")).read_text(encoding="utf-8"))
+    assert "read_note" in rules["base_rules"] and "BEFORE judging" in rules["base_rules"]

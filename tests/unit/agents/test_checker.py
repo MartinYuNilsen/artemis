@@ -140,6 +140,79 @@ def test_normalize_report_downgrades_vague_failures_and_fills_missing():
     assert by_text[("assert", "a1")].status == "inconclusive"
 
 
+def test_verdict_echoing_the_listed_line_still_matches_its_item():
+    """Items are listed as "- [verify] (on_complete) <text>"; models often echo that whole line back.
+    Before alignment the real item then read "no verdict produced" next to a duplicate that passed."""
+    items = [
+        _ci(kind="verify", when="on_complete", text="Names were read on screen"),
+        _ci(kind="assert", when="at_end", text="No playback was started"),
+    ]
+    report = CheckReport(
+        verdicts=[
+            CheckVerdict(
+                item_text="[verify] (on_complete) Names were read on screen",
+                kind="verify", status="passed", evidence="seen on the detail page",
+            ),
+            CheckVerdict(
+                item_text="- [assert] (at_end) No playback was started",
+                kind="assert", status="passed", evidence="no second ENTER",
+            ),
+        ]
+    )
+
+    normalized = _normalize_report(report, items)
+
+    assert [(v.kind, v.item_text, v.status) for v in normalized.verdicts] == [
+        ("verify", "Names were read on screen", "passed"),
+        ("assert", "No playback was started", "passed"),
+    ]  # one verdict per item, under the item's real text, nothing falsely inconclusive
+
+
+def test_matching_ignores_case_and_whitespace_and_a_wrong_kind_when_the_text_is_unambiguous():
+    items = [_ci(kind="assert", text="No playback was started")]
+    report = CheckReport(
+        verdicts=[CheckVerdict(item_text="  no  PLAYBACK was\nstarted ", kind="verify", status="passed", evidence="ok")]
+    )
+
+    [verdict] = _normalize_report(report, items).verdicts
+
+    assert (verdict.kind, verdict.item_text, verdict.status) == ("assert", "No playback was started", "passed")
+
+
+def test_two_verdicts_for_one_item_keep_the_least_favourable():
+    items = [_ci(kind="verify", text="Cast was read")]
+    report = CheckReport(
+        verdicts=[
+            CheckVerdict(item_text="Cast was read", kind="verify", status="passed", evidence="a"),
+            CheckVerdict(item_text="[verify] (on_complete) Cast was read", kind="verify", status="failed",
+                         evidence="the list was empty"),
+        ]
+    )
+
+    verdicts = _normalize_report(report, items).verdicts
+
+    assert [(v.item_text, v.status) for v in verdicts] == [("Cast was read", "failed")]
+
+
+def test_a_verdict_for_an_unlisted_item_is_kept_and_listed_items_stay_covered():
+    items = [_ci(kind="verify", text="listed")]
+    report = CheckReport(
+        verdicts=[CheckVerdict(item_text="something else", kind="verify", status="passed", evidence="x")]
+    )
+
+    verdicts = _normalize_report(report, items).verdicts
+
+    assert {(v.item_text, v.status) for v in verdicts} == {
+        ("something else", "passed"),
+        ("listed", "inconclusive"),
+    }
+
+
+def test_the_verdict_schema_tells_the_model_to_omit_the_list_markers():
+    description = CheckVerdict.model_fields["item_text"].description
+    assert "WITHOUT" in description and "[verify]" in description
+
+
 # --- Assembly: prompt segments x entry x content x config (§8 item 18) ---------------
 
 

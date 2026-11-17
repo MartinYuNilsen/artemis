@@ -81,7 +81,12 @@ class CheckVerdict(BaseModel):
     """One check item's verdict. The verdict value is never altered by the
     release decision (fail-open affects release only)."""
 
-    item_text: str = Field(description="The check line's text, quoted verbatim.")
+    item_text: str = Field(
+        description=(
+            "The check item's text, quoted verbatim, WITHOUT the leading '[verify]'/'[assert]'"
+            " and '(when)' markers shown in the list."
+        )
+    )
     kind: Literal["verify", "assert"]
     status: Literal["passed", "failed", "inconclusive"]
     evidence: str = Field(
@@ -432,11 +437,53 @@ async def _structured_report(llm, messages) -> CheckReport:
     return CheckReport(verdicts=[])
 
 
+# The items are listed to the model as "- [verify] (on_complete) <text>"; models often echo the whole line
+# back as item_text, so matching has to look past that prefix and past case/whitespace differences.
+_ITEM_PREFIX = re.compile(r"^\s*-?\s*\[(?:verify|assert)\]\s*(?:\([A-Za-z_ ]+\)\s*)?", re.IGNORECASE)
+_STATUS_RANK = {"failed": 0, "inconclusive": 1, "passed": 2}  # least favourable first
+
+
+def _canonical_item_text(text: str) -> str:
+    return " ".join(_ITEM_PREFIX.sub("", text or "").split()).casefold()
+
+
+def _align_verdicts_to_items(verdicts: list[CheckVerdict], check_items: list) -> list[CheckVerdict]:
+    """Point each verdict at the real item text it answers, and keep one verdict per item.
+
+    Without this, a verdict whose item_text carries the list prefix never matches its item: the item
+    is then reported "no verdict produced" (inconclusive) next to a duplicate that passed. When two
+    verdicts answer the same item, the least favourable one is kept: a duplicate must not hide a failure.
+    """
+    by_key = {(ci.kind, _canonical_item_text(ci.text)): ci for ci in check_items}
+    by_text: dict[str, list] = {}
+    for ci in check_items:
+        by_text.setdefault(_canonical_item_text(ci.text), []).append(ci)
+
+    aligned: list[CheckVerdict] = []
+    position: dict[tuple[str, str], int] = {}
+    for v in verdicts:
+        canon = _canonical_item_text(v.item_text)
+        item = by_key.get((v.kind, canon))
+        if item is None and len(by_text.get(canon, [])) == 1:
+            item = by_text[canon][0]  # the model got the kind wrong but the text is unambiguous
+        if item is None:
+            aligned.append(v)  # not an item we listed; keep it as reported
+            continue
+        v = v.model_copy(update={"item_text": item.text, "kind": item.kind})
+        key = (item.kind, item.text)
+        if key not in position:
+            position[key] = len(aligned)
+            aligned.append(v)
+        elif _STATUS_RANK[v.status] < _STATUS_RANK[aligned[position[key]].status]:
+            aligned[position[key]] = v
+    return aligned
+
+
 def _normalize_report(report: CheckReport, check_items: list) -> CheckReport:
     """Node-side hygiene: vague failed verdicts downgrade to inconclusive; every
     expected item gets a verdict (missing ones are inconclusive)."""
     verdicts: list[CheckVerdict] = []
-    for v in report.verdicts:
+    for v in _align_verdicts_to_items(list(report.verdicts), check_items):
         if v.status == "failed" and not v.evidence.strip():
             verdicts.append(
                 CheckVerdict(

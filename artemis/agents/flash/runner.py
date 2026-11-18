@@ -119,6 +119,13 @@ MAX_IDENTICAL_THOUGHT_TURNS = 3
 #: guard, so a plain streak cap is the backstop — healthy runs interleave
 #: occasional thinking turns with actions, never this many in a row.
 MAX_SILENT_TURN_STREAK = 8
+# A reply with no text, no thinking and no tool call is a provider glitch, not the model stalling in thought.
+# It is retried at once, without advancing the turn, before the stall guards above ever see it.
+MAX_EMPTY_REPLY_RETRIES = 2
+_EMPTY_REPLY_NUDGE = (
+    "Your previous reply was empty. Reply now by calling exactly one tool"
+    " (an action tool or 'report_task_status')."
+)
 
 _FINAL_TURN_WARNING = "[WARNING] This is your final turn; only 'report_task_status' is available."
 
@@ -900,6 +907,28 @@ class FlashRunner:
             )
         return pre_screenshot_bytes, xml_list, action_sequence
 
+    def _is_empty_reply(self, response) -> bool:
+        """No text, no thinking and no tool call: nothing the loop could act on or reason from."""
+        raw_text = self._extract_response_text(response)
+        if raw_text.strip() or self._extract_response_thinking(response).strip():
+            return False
+        return not self._resolve_tool_calls(response, raw_text)
+
+    async def _recover_empty_reply(self, response, llm, current_tools: list, messages: list[BaseMessage]):
+        """Retry an empty model reply before it counts as a stalled turn.
+
+        The first retry repeats the request unchanged; the second adds a one-off nudge to a copy of the
+        messages, so nothing extra is stored in the history. Returns the first usable reply, or the last
+        (still empty) one so the normal stall guards can take over.
+        """
+        for attempt in range(1, MAX_EMPTY_REPLY_RETRIES + 1):
+            if response is None or not self._is_empty_reply(response):
+                break
+            logger.warning(f"FlashRunner got an empty model reply; retrying ({attempt}/{MAX_EMPTY_REPLY_RETRIES}).")
+            retry_messages = messages if attempt == 1 else [*messages, HumanMessage(content=_EMPTY_REPLY_NUDGE)]
+            response = await self._invoke_model(llm, current_tools, retry_messages)
+        return response
+
     async def _invoke_model(self, llm, current_tools: list, messages: list[BaseMessage]):
         """Binds the active tools and invokes the model through the LLM gateway."""
         # Bind active tools
@@ -1118,6 +1147,7 @@ class FlashRunner:
             current_tools = report_only_tools if is_final else tools_declaration
 
             response = await self._invoke_model(llm, current_tools, messages)
+            response = await self._recover_empty_reply(response, llm, current_tools, messages)
 
             if response is None:
                 break

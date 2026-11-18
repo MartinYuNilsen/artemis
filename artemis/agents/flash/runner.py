@@ -924,7 +924,11 @@ class FlashRunner:
         for attempt in range(1, MAX_EMPTY_REPLY_RETRIES + 1):
             if response is None or not self._is_empty_reply(response):
                 break
-            logger.warning(f"FlashRunner got an empty model reply; retrying ({attempt}/{MAX_EMPTY_REPLY_RETRIES}).")
+            meta = getattr(response, "response_metadata", None) or {}
+            logger.warning(
+                f"FlashRunner got an empty model reply (stop_reason={meta.get('stop_reason')!r},"
+                f" usage={getattr(response, 'usage_metadata', None)}); retrying ({attempt}/{MAX_EMPTY_REPLY_RETRIES})."
+            )
             retry_messages = messages if attempt == 1 else [*messages, HumanMessage(content=_EMPTY_REPLY_NUDGE)]
             response = await self._invoke_model(llm, current_tools, retry_messages)
         return response

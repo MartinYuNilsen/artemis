@@ -907,6 +907,12 @@ class FlashRunner:
             )
         return pre_screenshot_bytes, xml_list, action_sequence
 
+    @staticmethod
+    def _is_refusal(response) -> bool:
+        """The provider declined to answer (Anthropic ``stop_reason='refusal'``): nothing a retry can change."""
+        meta = getattr(response, "response_metadata", None) or {}
+        return meta.get("stop_reason") == "refusal"
+
     def _is_empty_reply(self, response) -> bool:
         """No text, no thinking and no tool call: nothing the loop could act on or reason from."""
         raw_text = self._extract_response_text(response)
@@ -922,8 +928,8 @@ class FlashRunner:
         (still empty) one so the normal stall guards can take over.
         """
         for attempt in range(1, MAX_EMPTY_REPLY_RETRIES + 1):
-            if response is None or not self._is_empty_reply(response):
-                break
+            if response is None or self._is_refusal(response) or not self._is_empty_reply(response):
+                break  # a refusal is reported as such by the loop, not re-asked
             meta = getattr(response, "response_metadata", None) or {}
             logger.warning(
                 f"FlashRunner got an empty model reply (stop_reason={meta.get('stop_reason')!r},"
@@ -1154,6 +1160,19 @@ class FlashRunner:
             response = await self._recover_empty_reply(response, llm, current_tools, messages)
 
             if response is None:
+                break
+
+            if self._is_refusal(response):
+                final_report = {
+                    "status": "failed",
+                    "explanation": (
+                        "The model refused to continue (stop_reason='refusal') after "
+                        f"{turns} turn(s). This is the provider's safety layer declining the request, not a "
+                        "glitch: re-asking returns the same empty reply. Look at what the task text or the "
+                        "current screen contains, or try another model."
+                    ),
+                }
+                logger.warning(final_report["explanation"])
                 break
 
             messages.append(response)

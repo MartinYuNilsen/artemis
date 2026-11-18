@@ -79,3 +79,28 @@ def test_the_main_loop_routes_every_model_reply_through_the_retry():
 
     source = inspect.getsource(FlashRunner.run)
     assert source.index("_invoke_model(") < source.index("_recover_empty_reply(") < source.index("messages.append(response)")
+
+
+REFUSAL = AIMessage(content="", response_metadata={"stop_reason": "refusal"})
+
+
+def test_a_refusal_is_recognised_from_the_providers_stop_reason(runner):
+    assert runner._is_refusal(REFUSAL) is True
+    assert runner._is_refusal(EMPTY) is False
+    assert runner._is_refusal(TOOL_CALL) is False
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_is_never_retried(runner):
+    runner._invoke_model = AsyncMock()
+
+    assert await runner._recover_empty_reply(REFUSAL, "llm", [], []) is REFUSAL
+    runner._invoke_model.assert_not_awaited()  # re-asking a model that declined only burns tokens
+
+
+def test_the_main_loop_ends_the_run_on_a_refusal_with_a_clear_reason():
+    import inspect
+
+    source = inspect.getsource(FlashRunner.run)
+    assert source.index("_recover_empty_reply(") < source.index("_is_refusal(response)") < source.index("messages.append(response)")
+    assert "stop_reason='refusal'" in source

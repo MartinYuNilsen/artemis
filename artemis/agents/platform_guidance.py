@@ -49,10 +49,22 @@ _TVOS_GUIDANCE = (
 
 
 def device_action_guidance(ctx) -> str:
-    if getattr(getattr(ctx, "device", None), "mobile_platform", None) != "ios":
-        return ""
-    if _is_tvos_target(ctx):
+    """Platform constraints, then any app guide that applies to this target."""
+    from artemis.agents.app_guidance import app_guidance
+
+    platform = getattr(getattr(ctx, "device", None), "mobile_platform", None)
+    platform = str(getattr(platform, "value", platform)) if isinstance(getattr(platform, "value", platform), str) else ""
+    if platform == "ios" and _is_tvos_target(ctx):
+        platform = "tvos"
+    locked = getattr(getattr(ctx, "agent_config", None), "locked_app_package", None)
+    return _platform_guidance(ctx, platform) + app_guidance(platform, locked if isinstance(locked, str) else None)
+
+
+def _platform_guidance(ctx, platform) -> str:
+    if platform == "tvos":
         return _TVOS_GUIDANCE
+    if platform != "ios":
+        return ""
     return (
         "Target platform: iOS. For input_text, explicitly set clear_exist=false; "
         "type into an empty field or at its existing cursor. After typing into a URL "

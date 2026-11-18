@@ -194,3 +194,92 @@ async def test_ios_capture_does_not_call_simctl(tmp_path, monkeypatch):
     driver, BytesIO, Image = _capture_driver(tmp_path, monkeypatch, "ios", simctl)
     data = await driver.get_screen_data()
     assert (data.width, data.height) == (960, 540)
+
+
+# --- Settling after a press ------------------------------------------------------------------------
+
+
+def _hierarchy(tmp_path, name, *rows):
+    """A tvOS-style hierarchy file; rows are (label, focused, frame_x)."""
+    lines = ["Application, pid: 1, label: 'App'"]
+    for label, focused, x in rows:
+        lines.append(
+            f"  Button, {{{{{x}.0, 0.0}}, {{100.0, 50.0}}}}, label: '{label}'"
+            + (", Focused" if focused else "")
+            + f", hitPoint: {{{x}.0, 25.0}}"
+        )
+    path = tmp_path / f"{name}.txt"
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return {"hierarchyPath": str(path)}
+
+
+def test_fingerprint_ignores_frames_and_a_label_that_merely_says_focused():
+    from artemis.drivers.ios.xcode_driver import screen_fingerprint
+
+    a = "  Button, {{0.0, 0.0}, {10.0, 10.0}}, label: 'Film', Focused, hitPoint: {5.0, 5.0}"
+    moved = "  Button, {{40.0, 9.0}, {10.0, 10.0}}, label: 'Film', Focused, hitPoint: {45.0, 14.0}"
+    assert screen_fingerprint(a) == screen_fingerprint(moved) == ("Film", ("Film",))
+    tricky = "  Button, {{0.0, 0.0}, {10.0, 10.0}}, label: 'Home, Focused', hitPoint: {5.0, 5.0}"
+    assert screen_fingerprint(tricky)[0] == ""  # focus comes from the flag, not from label text
+
+
+@pytest.fixture
+def fast_settle(monkeypatch):
+    from artemis.drivers.ios import xcode_driver
+
+    monkeypatch.setattr(xcode_driver, "TVOS_SETTLE_INTERVAL_S", 0.0)
+    monkeypatch.setattr(xcode_driver, "TVOS_SETTLE_TIMEOUT_S", 2.0)
+    return xcode_driver
+
+
+@pytest.mark.asyncio
+async def test_a_tvos_press_waits_until_the_screen_stops_changing(tmp_path, fast_settle):
+    loading = _hierarchy(tmp_path, "loading", ("Hjem", True, 0))
+    loaded = _hierarchy(tmp_path, "loaded", ("Film", True, 0), ("Tile", False, 200))
+    driver = _driver("tvos")
+    # The press returns a half-built page; the next read has the tiles; the one after is identical.
+    driver._synthesize = AsyncMock(side_effect=[loading, loaded, loaded])
+
+    assert await driver.press_key("dpad_right") is True
+
+    commands = [call.args[0] if call.args else "" for call in driver._synthesize.await_args_list]
+    assert commands == ["r right", "", ""]  # the press, then two reads proving the screen is stable
+
+
+@pytest.mark.asyncio
+async def test_a_screen_that_never_settles_does_not_block_the_press(tmp_path, monkeypatch):
+    from artemis.drivers.ios import xcode_driver
+
+    monkeypatch.setattr(xcode_driver, "TVOS_SETTLE_INTERVAL_S", 0.0)
+    monkeypatch.setattr(xcode_driver, "TVOS_SETTLE_TIMEOUT_S", 0.05)
+    a = _hierarchy(tmp_path, "a", ("Spinner A", True, 0))
+    b = _hierarchy(tmp_path, "b", ("Spinner B", True, 0))
+    driver = _driver("tvos")
+    driver._synthesize = AsyncMock(side_effect=lambda *args, **kw: a if driver._synthesize.await_count % 2 else b)
+
+    assert await driver.press_key("enter") is True  # returned, did not hang
+
+    assert 1 < driver._synthesize.await_count < 5000
+
+
+@pytest.mark.asyncio
+async def test_settling_can_be_switched_off(tmp_path, monkeypatch):
+    from artemis.drivers.ios import xcode_driver
+
+    monkeypatch.setattr(xcode_driver, "TVOS_SETTLE_TIMEOUT_S", 0.0)
+    driver = _driver("tvos")
+    driver._synthesize = AsyncMock(return_value=_hierarchy(tmp_path, "x", ("Hjem", True, 0)))
+
+    await driver.press_key("back")
+
+    driver._synthesize.assert_awaited_once_with("r menu")
+
+
+@pytest.mark.asyncio
+async def test_ios_presses_are_not_settled(tmp_path, fast_settle):
+    driver = _driver("ios")
+    driver._synthesize = AsyncMock(return_value=_hierarchy(tmp_path, "x", ("Home", False, 0)))
+
+    await driver.press_key("home")
+
+    driver._synthesize.assert_awaited_once_with("b h")

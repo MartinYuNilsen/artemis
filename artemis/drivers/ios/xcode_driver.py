@@ -17,7 +17,9 @@ import asyncio
 import base64
 from io import BytesIO
 import json
+import os
 import re
+import time
 from pathlib import Path
 import plistlib
 import sys
@@ -94,6 +96,33 @@ _TVOS_REMOTE_KEYS = {
     "media_play_pause": "playpause",
     "home": "home",
 }
+
+
+# A remote press returns as soon as Xcode has dispatched it, but a tvOS page often keeps loading for a moment
+# (tab pages load on focus, tiles arrive asynchronously). An agent that fires its next key at once acts on a
+# half-built screen: focus is not where it expects, so the key lands on the wrong element or is lost. After every
+# tvOS press the driver therefore waits until the focused element and the on-screen labels stop changing.
+TVOS_SETTLE_TIMEOUT_S = float(os.environ.get("ARTEMIS_TVOS_SETTLE_TIMEOUT", "6"))
+TVOS_SETTLE_INTERVAL_S = 0.4
+_LABEL = re.compile(r"label:\s*'((?:\\.|[^'])*)'")
+
+
+def screen_fingerprint(hierarchy: str) -> tuple[str, tuple[str, ...]]:
+    """What a person would call "the same screen": the focused element and the labels shown.
+
+    Frames and hit points are left out on purpose: a slowly moving banner or carousel changes them
+    continuously and would keep a settled screen "unsettled" until the timeout.
+    """
+    focused = ""
+    labels: list[str] = []
+    for line in hierarchy.splitlines():
+        label = _LABEL.search(line)
+        text = " ".join(label.group(1).split()) if label else ""
+        if text:
+            labels.append(text)
+        if re.search(r",\s*Focused\b", _LABEL.sub("''", line)):
+            focused = text or line.strip().split(",", 1)[0]
+    return focused, tuple(sorted(set(labels)))
 
 
 class XcodeSimulatorDriver(BaseDeviceDriver):
@@ -373,6 +402,35 @@ class XcodeSimulatorDriver(BaseDeviceDriver):
             arguments["interactSessionKey"] = self._session_key
             return await self._bridge.call("DeviceInteractionSynthesize", arguments)
 
+    async def _settle(self, first: dict[str, Any]) -> bool:
+        """Wait until the screen after an input stops changing; ``False`` if it never did.
+
+        Starts from the hierarchy the input itself returned and re-reads until two consecutive reads show the
+        same focus and labels. A page that never settles (a spinner, playing video) is not waited on past the
+        timeout. Disable with ARTEMIS_TVOS_SETTLE_TIMEOUT=0.
+        """
+        if TVOS_SETTLE_TIMEOUT_S <= 0:
+            return True
+
+        async def fingerprint(result: dict[str, Any]):
+            path = result.get("hierarchyPath")
+            if not path:
+                return None
+            text = await asyncio.to_thread(Path(path).read_text, encoding="utf-8")
+            return screen_fingerprint(text)
+
+        previous = await fingerprint(first)
+        deadline = time.monotonic() + TVOS_SETTLE_TIMEOUT_S
+        while previous is not None and time.monotonic() < deadline:
+            await asyncio.sleep(TVOS_SETTLE_INTERVAL_S)
+            current = await fingerprint(await self._synthesize())
+            if current == previous:
+                return True
+            previous = current
+        if previous is not None:
+            logger.debug(f"tvOS screen did not settle within {TVOS_SETTLE_TIMEOUT_S:.0f}s; continuing.")
+        return previous is None
+
     async def _restart_interaction_session(self) -> None:
         """Replace the dropped Xcode interaction session, respawning the bridge."""
         # Retry the whole reconnect: a respawned mcpbridge may report the old
@@ -608,7 +666,8 @@ class XcodeSimulatorDriver(BaseDeviceDriver):
                     f"{', '.join(sorted(_TVOS_REMOTE_KEYS))}."
                 )
             async with self._operation_lock:
-                await self._synthesize(f"r {button}")
+                result = await self._synthesize(f"r {button}")
+                await self._settle(result)
             return True
         commands = {
             "home": "b h",

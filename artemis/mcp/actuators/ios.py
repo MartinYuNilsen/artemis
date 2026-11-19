@@ -36,7 +36,10 @@ class IosActuator(AdbActuator):
         # Xcode has no verified whole-field clear, but focusing a field like
         # the Safari address bar select-alls its content, so typed text still
         # replaces it. The result must not claim a clear that never happened.
-        if target:
+        # tvOS has no touch: focusing the target by tapping it fails, and with it the whole call. The field
+        # that has focus (the on-screen keyboard's field) receives the text, so type without tapping there.
+        on_tvos = getattr(getattr(self.controller, "driver", None), "is_tvos", False) is True
+        if target and not on_tvos:
             error = await ensure_focus_at_coords(self.controller, *self._to_px(*target))
             if error:
                 return ActionResult.failure("input_text", error)
@@ -48,6 +51,8 @@ class IosActuator(AdbActuator):
             if clear_exist
             else ""
         )
+        if target and on_tvos:
+            note += " (tvOS: typed into the field that has focus; the target was not tapped)"
         return ActionResult.success("input_text", f"Typed '{text}'.{note}")
 
     async def press_key(self, key: str) -> ActionResult:

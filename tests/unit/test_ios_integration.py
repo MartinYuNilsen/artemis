@@ -275,6 +275,33 @@ async def test_ios_clear_refusal_happens_before_focus_mutation(native_driver):
 
 
 @pytest.mark.asyncio
+async def test_tvos_input_text_with_a_target_types_without_tapping(native_driver):
+    """tvOS has no touch: a target must not turn into a tap (which fails the whole call)."""
+    native_driver.is_tvos = True
+    native_driver.input_text.return_value = True
+
+    result = await IosActuator(ios_context(native_driver)).input_text(
+        "peppa", target=(500, 500), clear_exist=False
+    )
+
+    assert result.ok is True
+    assert "target was not tapped" in result.message
+    native_driver.tap.assert_not_awaited()
+    native_driver.input_text.assert_awaited_once_with("peppa", clear_existing=False)
+
+
+@pytest.mark.asyncio
+async def test_tvos_input_text_without_a_target_is_unchanged(native_driver):
+    native_driver.is_tvos = True
+    native_driver.input_text.return_value = True
+
+    result = await IosActuator(ios_context(native_driver)).input_text("peppa", clear_exist=False)
+
+    assert result.ok is True and "not tapped" not in result.message
+    native_driver.tap.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_ios_coordinates_follow_latest_orientation(native_driver):
     native_driver.screen_size = (2532, 1170)
     assert (await IosActuator(ios_context(native_driver)).click(500, 500)).ok
